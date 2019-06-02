@@ -1,0 +1,145 @@
+#include "eval_vp.h"
+
+Eval_VP::Eval_VP()
+{
+
+}
+
+std::vector<cv::Point2f> Eval_VP::run(cv::Mat img) {
+    std::vector<cv::Point2f> vps;
+
+    cv::Mat img_gray;
+    if(img.channels()==1) {
+        img_gray = img;
+    }
+    else {
+        cv::cvtColor(img, img_gray, CV_BGR2GRAY);
+    }
+
+    int _cols = img_gray.cols;
+    int _rows = img_gray.rows;
+    int min_length = _cols * _cols * 0.00001;
+
+    //cv::equalizeHist(img_gray, img_gray);
+
+    //Create cv object for line segment detection
+    std::cout << "Create cv object for line segment detection" << std::endl;
+    cv::Ptr<cv::LineSegmentDetector> lsd = cv::createLineSegmentDetector(cv::LSD_REFINE_STD);
+    std::vector<cv::Vec4i> lines_std;
+    lines_std.clear();
+    lsd->detect(img_gray, lines_std);
+
+    std::vector<int> temp;
+    std::vector<std::vector<int>> points;
+
+    //SELECTION
+    std::cout << "SELECTION" << std::endl;
+    unsigned long num_lines = lines_std.size();
+    std::cout << "    num_lines: " << num_lines << std::endl;
+    unsigned int k = 0;
+    while(k < num_lines) {
+        //std::cout << k << std::endl;
+        //Ignore if almost vertical
+        if( abs(lines_std[k][0] - lines_std[k][2]) < 10 ||
+                abs(lines_std[k][1] - lines_std[k][3]) < 10) {
+            k++;
+            continue;
+        }
+        //Ignore shorter lines
+        if((lines_std[k][0] - lines_std[k][2])*(lines_std[k][0] - lines_std[k][2]) +
+                (lines_std[k][1] - lines_std[k][3])*(lines_std[k][1] - lines_std[k][3]) < min_length) {
+            k++;
+            continue;
+        }
+
+        //Store valid lines' endpoints for calculation
+        int j = 0;
+        while(j < 4) {
+            //std::cout << ">> " << k << "; " << j << std::endl;
+            temp.push_back(lines_std[k][j]);
+            j++;
+        }
+        points.push_back(temp);
+        temp.clear();
+        k++;
+    }
+
+    //makelines
+    std::cout << "makelines" << std::endl;
+    arma::mat A = arma::zeros<arma::mat>(points.size(), 2);
+    arma::mat b = arma::zeros<arma::mat>(points.size(), 1);
+    for(unsigned long int i = 0; i < points.size(); i++) {
+        A(i, 0) = - (points[i][3] - points[i][1]); // -(y2 - y1)
+        A(i, 1) =   (points[i][2] - points[i][0]); // (x2 - x1)
+        b(i, 0) = A(i,0)*points[i][0] + A(i, 1)*points[i][1]; // -(y2-y1)*x1 + (x2-x1)*y1
+    }
+
+    //eval
+    //Stores the estimated co-ordinates of the vanishing point with respect to the image
+    arma::mat soln = arma::zeros<arma::mat>(2,1);
+    double err = 999999999;
+    //calculate point of intersection of every pair of lines and
+    //find the sum of distance from all other lines
+    //select the point which has the minimum sum of distance
+    for(unsigned long int i = 0; i < points.size(); i++) {
+        for(unsigned long int j = 0; j < points.size(); j++) {
+            if(i > j) continue;
+            //armadillo vector
+            arma::uvec indices;
+            //store indices of lines to be used for calculation
+            indices << i << j;
+            arma::mat Atemp = A.rows(indices);
+            arma::mat btemp = b.rows(indices);
+            //if lines are parallel the skip
+            if(rank(Atemp) != 2) continue;
+            //solve for 'x' in Ax=b
+            arma::mat x = arma::zeros<arma::mat>(2,1);
+            arma::solve(x, Atemp, btemp);
+
+            if(x.n_rows == 0 || x.n_cols ==0) continue;
+
+            //calulate error assuming perfect intersection is
+            arma::mat error = A*x - b;
+            error /= 1000;
+            double temp_err = 0.0;
+            //sum of errors
+            for(int k = 0; k < error.n_rows; k++) {
+                temp_err += (error(k, 0) * error(k, 0)) / 1000;
+            }
+            //scale errors to prevent any overflow
+            temp_err /= 1000000;
+            //if current error is small than previous min error then update the solution (point)
+            if(err > temp_err){
+                soln = x;
+                err = temp_err;
+            }
+        }
+    }
+
+    //SHOW-lch
+    if(true) {
+        cv::Mat img_show = img.clone();
+        //draw a circle to visualize the approximate vp
+        if(soln(0,0) > 0 && soln(0,0) < _cols &&
+                soln(1,0) > 0 && soln(1,0) < _rows) {
+            cv::circle(img, cv::Point(soln(0,0), soln(1,0)), 25, cv::Scalar(0,0,255), 10);
+        }
+        unsigned long num_lines = lines_std.size();
+        for(unsigned int k = 0; k < num_lines; k++) {
+            cv::Vec4i _line = lines_std[k];
+            cv::Point2d pt1(_line[0], _line[1]);
+            cv::Point2d pt2(_line[2], _line[3]);
+            cv::circle(img_show, pt1, 1, cv::Scalar(255, 0, 0), 1, 8, 0);
+            cv::circle(img_show, pt2, 1, cv::Scalar(0, 255, 0), 1, 8, 0);
+            cv::line(img_show, pt1, pt2, cv::Scalar(0, 0, 255), 1, 8, 0);
+        }
+        cv::imshow("LINEDETECT", img_show);
+        cv::waitKey(0);
+    }
+
+
+
+
+
+    return vps;
+}
